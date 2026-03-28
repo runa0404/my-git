@@ -1,24 +1,15 @@
-from fastapi import FastAPI, UploadFile, File
-from PIL import Image, ImageEnhance
-import numpy as np
-import torch
+from flask import Flask, request, jsonify
 import clip
-import io
+import torch
+import numpy as np
+from PIL import Image, ImageEnhance, ImageFilter
 
-app = FastAPI()
+app = Flask(__name__)
 
-# ? Performance optimization
 torch.set_num_threads(2)
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
-
-# ?? Load model ONLY ONCE (very important for Render)
+device = "cuda" if torch.cuda.is_available() else "cpu" # or "cuda" if available
 model, preprocess = clip.load("ViT-B/32", device=device)
-
-
-# ==============================
-# IMAGE PREPROCESS FUNCTIONS
-# ==============================
 
 def normalize_note(image):
     w, h = image.size
@@ -44,8 +35,7 @@ def mask_serial(image):
     img[0:int(h*0.25), int(w*0.65):w] = 200
 
     return Image.fromarray(img)
-
-
+	
 def generate_variants(image, is_coin=True):
     variants = []
 
@@ -63,22 +53,13 @@ def generate_variants(image, is_coin=True):
     return variants
 
 
-# ==============================
-# ROUTES
-# ==============================
+@app.route('/clip', methods=['POST'])
+def get_embedding():
 
-@app.get("/")
-def home():
-    return {"message": "API is working ??"}
+    file = request.files['image']
+    base_image = Image.open(file.stream).convert("RGB")
 
-
-@app.post("/clip")
-async def get_embedding(file: UploadFile = File(...)):
-    
-    contents = await file.read()
-    base_image = Image.open(io.BytesIO(contents)).convert("RGB")
-
-    # ?? coin detection
+    # simple coin detection
     w, h = base_image.size
     is_coin = 0.9 <= (w / h) <= 1.1
 
@@ -87,10 +68,10 @@ async def get_embedding(file: UploadFile = File(...)):
         base_image = center_crop(base_image)
         base_image = mask_serial(base_image)
 
-    # ?? generate variants
+    # generate variants
     variants = generate_variants(base_image, is_coin)
 
-    # ? batch processing
+    # ?? BATCH PROCESSING
     image_tensors = torch.stack([
         preprocess(img) for img in variants
     ]).to(device)
@@ -100,10 +81,14 @@ async def get_embedding(file: UploadFile = File(...)):
 
     features = features.cpu().numpy()
 
-    # ?? normalize
+    # normalize all at once
     norms = np.linalg.norm(features, axis=1, keepdims=True)
     features = features / norms
 
     embeddings = features.tolist()
 
-    return {"embeddings": embeddings}
+    return jsonify({"embeddings": embeddings})
+
+
+if __name__ == "__main__":
+    app.run(host="127.0.0.1", port=5000)
